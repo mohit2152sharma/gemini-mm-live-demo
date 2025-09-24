@@ -7,36 +7,37 @@ from google.genai import types
 
 from app.core.config import settings
 from app.tools import travel_tool
+from utils._logger import logger
 
 
 class GeminiClientManager:
     """Manages Gemini client initialization and configuration."""
-    
+
     def __init__(self):
         self._client = None
         self._config = None
-    
+
     def initialize_client(self) -> genai.Client:
         """
         Initialize and return the Gemini client.
-        
+
         Returns:
             genai.Client: Configured Gemini client
-            
+
         Raises:
             ValueError: If configuration is invalid
             Exception: If client initialization fails
         """
         try:
             settings.validate_configuration()
-            
+
             if settings.GOOGLE_GENAI_USE_VERTEXAI:
                 self._client = genai.Client(
                     vertexai=True,
                     project=settings.GOOGLE_CLOUD_PROJECT_ID,
-                    location=settings.GOOGLE_CLOUD_LOCATION
+                    location=settings.GOOGLE_CLOUD_LOCATION,
                 )
-                print(
+                logger.info(
                     f"✅ Gemini client initialized using Vertex AI "
                     f"(Project: {settings.GOOGLE_CLOUD_PROJECT_ID}, "
                     f"Location: {settings.GOOGLE_CLOUD_LOCATION})"
@@ -44,24 +45,24 @@ class GeminiClientManager:
             else:
                 self._client = genai.Client()
                 print("✅ Gemini client initialized using API Key")
-                
+
             return self._client
-            
+
         except Exception as e:
             print(f"❌ Failed to initialize Gemini client: {e}")
             raise
-    
+
     def get_live_config(self) -> types.LiveConnectConfig:
         """
         Get the LiveConnectConfig for Gemini Live API.
-        
+
         Returns:
             types.LiveConnectConfig: Configuration for live connection
         """
         if self._config is None:
             self._config = self._create_live_config()
         return self._config
-    
+
     def _create_live_config(self) -> types.LiveConnectConfig:
         """Create the live connection configuration."""
         return types.LiveConnectConfig(
@@ -73,7 +74,7 @@ class GeminiClientManager:
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
                         voice_name=settings.VOICE_NAME
                     )
-                )
+                ),
             ),
             input_audio_transcription={},
             output_audio_transcription={},
@@ -89,11 +90,11 @@ class GeminiClientManager:
                     prefix_padding_ms=100,
                     silence_duration_ms=1200,
                 ),
-                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
             ),
-            tools=[travel_tool]
+            tools=[travel_tool],
         )
-    
+
     def _get_system_instruction(self) -> str:
         """Get the system instruction for the travel assistant."""
         return """***Role and Persona***
@@ -150,14 +151,17 @@ class GeminiClientManager:
 *   If you encounter a platform error, apologize briefly and retry. If the error persists, offer to connect the user to a human agent.
 *   If the user is abusive, politely end the conversation.
 """
-    
+
     @property
     def client(self) -> genai.Client:
         """Get the initialized client."""
         if self._client is None:
-            raise RuntimeError("Client not initialized. Call initialize_client() first.")
+            raise RuntimeError(
+                "Client not initialized. Call initialize_client() first."
+            )
         return self._client
 
 
 # Global client manager instance
 gemini_manager = GeminiClientManager()
+

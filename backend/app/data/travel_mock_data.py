@@ -1,21 +1,13 @@
 import datetime
-import logging
-import sys
 import json
-from typing import Dict, List, Optional, Any
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(
-    stream=sys.stdout,
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+# Use structlog for consistent logging
+from utils._logger import logger
 
 # Global store for logs (maintaining compatibility with original structure)
 GLOBAL_LOG_STORE = []
@@ -31,10 +23,10 @@ def clear_global_log_store():
 def validate_booking_exists(booking_id: str) -> dict:
     """
     Validate if a booking ID exists in the system.
-    
+
     Args:
         booking_id (str): The booking ID to validate
-        
+
     Returns:
         dict: Validation result with status and booking data if found
     """
@@ -42,21 +34,22 @@ def validate_booking_exists(booking_id: str) -> dict:
         return {
             "is_valid": False,
             "status": "INVALID_BOOKING_ID",
-            "message": "Booking ID cannot be empty"
+            "message": "Booking ID cannot be empty",
         }
-    
+
     if booking_id not in MOCK_DATA_STORE["bookings"]:
         return {
             "is_valid": False,
-            "status": "BOOKING_NOT_FOUND", 
-            "message": f"Booking {booking_id} not found in our system"
+            "status": "BOOKING_NOT_FOUND",
+            "message": f"Booking {booking_id} not found in our system",
         }
-    
+
     return {
         "is_valid": True,
         "status": "SUCCESS",
-        "booking": MOCK_DATA_STORE["bookings"][booking_id]
+        "booking": MOCK_DATA_STORE["bookings"][booking_id],
     }
+
 
 # User ID (maintaining compatibility)
 USER_ID = "shubham"
@@ -540,7 +533,7 @@ def book_flight(
         )
         return {
             "status": "SUCCESS",
-            "message": f"Flight booked successfully",
+            "message": "Flight booked successfully",
             "booking_id": booking_id,
             "total_cost": booking["total_cost"],
             "currency": booking["currency"],
@@ -768,7 +761,7 @@ def book_hotel(
         )
         return {
             "status": "SUCCESS",
-            "message": f"Hotel booked successfully",
+            "message": "Hotel booked successfully",
             "booking_id": booking_id,
             "total_cost": booking["total_cost"],
             "currency": booking["currency"],
@@ -840,7 +833,7 @@ def list_user_bookings(user_id: str = None) -> dict:
             )
             return {
                 "status": "NO_BOOKINGS_FOUND",
-                "message": f"No bookings found",
+                "message": "No bookings found",
                 "bookings": [],
             }
 
@@ -1083,7 +1076,7 @@ def test_travel_system():
 
 # Example usage (for testing purposes)
 if __name__ == "__main__":
-    logger.info(f"Travel Mock Data System Initialized")
+    logger.info("Travel Mock Data System Initialized")
     logger.info(f"Using User ID: {USER_ID}\n")
 
     logger.info("--- Test Travel System ---")
@@ -1148,7 +1141,7 @@ def send_eticket(booking_id_or_pnr: str) -> dict:
     """Sends an e-ticket to the user."""
     func_name = "send_eticket"
     params = {"booking_id_or_pnr": booking_id_or_pnr}
-    
+
     try:
         # Validate booking exists
         validation = validate_booking_exists(booking_id_or_pnr)
@@ -1163,7 +1156,7 @@ def send_eticket(booking_id_or_pnr: str) -> dict:
                 "status": validation["status"],
                 "message": validation["message"],
             }
-        
+
         # Booking exists, proceed with sending e-ticket
         booking = validation["booking"]
         log_travel_interaction(
@@ -1177,7 +1170,7 @@ def send_eticket(booking_id_or_pnr: str) -> dict:
             "message": f"E-ticket for booking {booking_id_or_pnr} has been sent to your registered email address.",
             "booking_type": booking["type"],
         }
-        
+
     except Exception as e:
         log_travel_interaction(func_name, params, status="ERROR", error_message=str(e))
         return {

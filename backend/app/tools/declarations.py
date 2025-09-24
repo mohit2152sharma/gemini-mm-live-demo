@@ -8,7 +8,6 @@ to understand what functions are available and how to call them.
 
 from google.genai import types
 
-
 # Function Declarations
 
 take_a_nap_declaration = types.FunctionDeclaration(
@@ -300,7 +299,7 @@ Webcheckin_And_Boarding_Pass_Agent_declaration = types.FunctionDeclaration(
                     },
                     required=["origin", "destination", "isAllPax"],
                 ),
-            )
+            ),
         },
         required=["booking_id_or_pnr", "journeys"],
     ),
