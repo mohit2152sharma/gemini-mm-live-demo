@@ -48,6 +48,7 @@ class GeminiResponseHandler:
         self.is_tool_response = False
         self.audio_processing_lock = asyncio.Lock()
         self.processed_tool_calls = set()
+        self.tool_delivery_in_progress = False
 
     def set_is_tool_response(self, value: bool):
         """Sets the flag to indicate the next response is from a tool call."""
@@ -76,6 +77,8 @@ class GeminiResponseHandler:
                                 "\033[96m[INFO] Resetting tool response flag on turn completion.\033[0m"
                             )
                             self.is_tool_response = False
+                        if self.tool_delivery_in_progress:
+                            self.tool_delivery_in_progress = False
                         await self._deliver_queued_tool_responses("turn_complete")
 
                     # Also check for speech completion based on audio gap
@@ -200,6 +203,9 @@ class GeminiResponseHandler:
             except Exception as send_exc:
                 print(f"Backend: Error sending interrupt_playback signal: {send_exc}")
                 self.session_state["active_processing"] = False
+        else:
+            # Interruption occurred during tool-driven speech; release delivery lock
+            self.tool_delivery_in_progress = False
 
     async def _handle_unhandled_content(self, server_content):
         """Handle unhandled server content."""
@@ -256,90 +262,74 @@ class GeminiResponseHandler:
         return unhandled_text
 
     async def _deliver_queued_tool_responses(self, trigger_reason: str):
-        """Deliver all queued tool responses with coordination logging."""
+        """Deliver a single queued tool response with coordination and serialization."""
+        if self.tool_delivery_in_progress:
+            return
         if self.tool_results_queue.empty():
             return
 
-        response_count = 0
-        while not self.tool_results_queue.empty():
-            function_response = await self.tool_results_queue.get()
-
+        next_response = None
+        # Pull until we find a non-duplicate
+        while not self.tool_results_queue.empty() and next_response is None:
+            candidate = await self.tool_results_queue.get()
             try:
-                # Check if it's a FunctionResponse object or needs to be sent differently
-                if hasattr(function_response, "name") and hasattr(
-                    function_response, "response"
-                ):
-                    # Create a unique ID for the tool response to prevent reprocessing
-                    tool_call_id = f"{function_response.name}-{function_response.response.get('uuid', '')}"
-
+                if hasattr(candidate, "name") and hasattr(candidate, "response"):
+                    tool_call_id = f"{candidate.name}-{candidate.response.get('uuid', '')}"
                     if tool_call_id in self.processed_tool_calls:
                         print(
                             f"\033[93m[WARN] Skipping already processed tool call: {tool_call_id}\033[0m"
                         )
-                        self.tool_results_queue.task_done()
                         continue
-
-                    # It's a FunctionResponse object - send as tool response
-                    self.is_tool_response = True
-                    await self.session.send_tool_response(
-                        function_responses=[function_response]
-                    )
-
-                    # Log the coordinated sending
-                    delivery_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-                    print(
-                        f"\033[96m[{delivery_timestamp}] 🎯 COORDINATED_DELIVERY: Sent tool response for {function_response.name} (trigger: {trigger_reason})\033[0m"
-                    )
-                    self.processed_tool_calls.add(tool_call_id)
-                else:
-                    # It's some other format - use original send_client_content method
-                    await self.session.send_client_content(turns=[function_response])
-
-                    # Log the coordinated sending
-                    delivery_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-                    print(
-                        f"\033[96m[{delivery_timestamp}] 🎯 COORDINATED_DELIVERY: Sent client content (trigger: {trigger_reason})\033[0m"
-                    )
-
-                response_count += 1
+                next_response = candidate
             finally:
-                self.tool_results_queue.task_done()
+                if next_response is not candidate:
+                    self.tool_results_queue.task_done()
 
-        # Update speech state
-        if response_count > 0:
-            self.speech_state["is_gemini_speaking"] = False
-            self.speech_state["pending_tool_responses"] = max(
-                0, self.speech_state["pending_tool_responses"] - response_count
-            )
-            print(
-                f"\033[96m[{time.strftime('%H:%M:%S.%f')[:-3]}] ✅ DELIVERY_COMPLETE: Delivered {response_count} tool responses, speech state reset\033[0m"
-            )
-
-    async def _check_speech_completion_and_deliver_responses(self):
-        """Check if speech has completed based on audio timing and deliver queued responses."""
-        current_time = time.time()
-
-        # Only check if we think Gemini is speaking and we have queued responses
-        if (
-            not self.speech_state["is_gemini_speaking"]
-            or self.tool_results_queue.empty()
-        ):
+        if next_response is None:
             return
 
-        # Check if enough time has passed since last audio to consider speech complete
+        try:
+            self.tool_delivery_in_progress = True
+            if hasattr(next_response, "name") and hasattr(next_response, "response"):
+                self.is_tool_response = True
+                await self.session.send_tool_response(function_responses=[next_response])
+
+                delivery_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
+                print(
+                    f"\033[96m[{delivery_timestamp}] 🎯 COORDINATED_DELIVERY: Sent tool response for {next_response.name} (trigger: {trigger_reason})\033[0m"
+                )
+                tool_call_id = f"{next_response.name}-{next_response.response.get('uuid', '')}"
+                self.processed_tool_calls.add(tool_call_id)
+            else:
+                await self.session.send_client_content(turns=[next_response])
+
+                delivery_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
+                print(
+                    f"\033[96m[{delivery_timestamp}] 🎯 COORDINATED_DELIVERY: Sent client content (trigger: {trigger_reason})\033[0m"
+                )
+        finally:
+            self.tool_results_queue.task_done()
+
+    async def _check_speech_completion_and_deliver_responses(self):
+        """When tool delivery is in progress, detect a conservative speech end and chain the next delivery."""
+        current_time = time.time()
+
+        if not self.tool_delivery_in_progress:
+            return
+
         if self.speech_state["last_audio_timestamp"]:
             time_since_audio = current_time - self.speech_state["last_audio_timestamp"]
-            SPEECH_COMPLETION_THRESHOLD = (
-                1.5  # 1500ms without audio = speech likely complete
-            )
+            SPEECH_COMPLETION_THRESHOLD = 2.0
 
             if time_since_audio > SPEECH_COMPLETION_THRESHOLD:
                 speech_duration = current_time - (
                     self.speech_state["speech_start_time"] or current_time
                 )
                 print(
-                    f"\\033[96m[{time.strftime('%H:%M:%S.%f')[:-3]}] 🕐 SPEECH_GAP_DETECTED: {time_since_audio:.2f}s since last audio (speech duration: {speech_duration:.2f}s)\\033[0m"
+                    f"\\033[96m[{time.strftime('%H:%M:%S.%f')[:-3]}] 🕐 SPEECH_GAP_DETECTED (tool): {time_since_audio:.2f}s since last audio (speech duration: {speech_duration:.2f}s)\\033[0m"
                 )
+                self.speech_state["is_gemini_speaking"] = False
+                self.tool_delivery_in_progress = False
                 await self._deliver_queued_tool_responses("speech_gap_detected")
 
     async def _handle_error(self, error):
