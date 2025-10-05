@@ -1,274 +1,191 @@
-"""
-Tool registry that combines declarations and implementations.
+"""Tool registry compatible with the new BaseTool-style tool definitions."""
 
-This module exports the travel tool instance containing all function declarations
-and provides a mapping of function names to their implementations.
-Enhanced with callback-based execution for non-blocking function calls.
-"""
+from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
-from typing import Any, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict, Mapping
 
 from google.genai import types
 
-from .declarations import (
-    Booking_Cancellation_Agent_declaration,
-    Connect_To_Human_Tool_declaration,
-    DateChangeAgent_declaration,
-    Enquiry_Tool_declaration,
-    Eticket_Sender_Agent_declaration,
-    Flight_Booking_Details_Agent_declaration,
-    NameCorrectionAgent_declaration,
-    ObservabilityAgent_declaration,
-    SpecialClaimAgent_declaration,
-    Webcheckin_And_Boarding_Pass_Agent_declaration,
-    take_a_nap_declaration,
-)
-from .implementations import (
-    Booking_Cancellation_Agent,
-    Connect_To_Human_Tool,
-    DateChangeAgent,
-    Enquiry_Tool,
-    Eticket_Sender_Agent,
-    Flight_Booking_Details_Agent,
-    NameCorrectionAgent,
-    ObservabilityAgent,
-    SpecialClaimAgent,
-    Webcheckin_And_Boarding_Pass_Agent,
-    take_a_nap,
-)
+from app.tools.all_tools import AllTools
 
-# Tool instance containing all function declarations
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Tool declarations
+# ---------------------------------------------------------------------------
+
 travel_tool = types.Tool(
-    function_declarations=[
-        take_a_nap_declaration,
-        NameCorrectionAgent_declaration,
-        SpecialClaimAgent_declaration,
-        Enquiry_Tool_declaration,
-        Eticket_Sender_Agent_declaration,
-        ObservabilityAgent_declaration,
-        DateChangeAgent_declaration,
-        Connect_To_Human_Tool_declaration,
-        Booking_Cancellation_Agent_declaration,
-        Flight_Booking_Details_Agent_declaration,
-        Webcheckin_And_Boarding_Pass_Agent_declaration,
-    ]
+    function_declarations=[tool.declaration for tool in AllTools.get_all()]
 )
 
-# Function mapping for easy lookup of implementations
-available_functions = {
-    "take_a_nap": take_a_nap,
-    "NameCorrectionAgent": NameCorrectionAgent,
-    "SpecialClaimAgent": SpecialClaimAgent,
-    "Enquiry_Tool": Enquiry_Tool,
-    "Eticket_Sender_Agent": Eticket_Sender_Agent,
-    "ObservabilityAgent": ObservabilityAgent,
-    "DateChangeAgent": DateChangeAgent,
-    "Connect_To_Human_Tool": Connect_To_Human_Tool,
-    "Booking_Cancellation_Agent": Booking_Cancellation_Agent,
-    "Flight_Booking_Details_Agent": Flight_Booking_Details_Agent,
-    "Webcheckin_And_Boarding_Pass_Agent": Webcheckin_And_Boarding_Pass_Agent,
-}
+
+# ---------------------------------------------------------------------------
+# Helper factories
+# ---------------------------------------------------------------------------
+
+
+def _bind_tool(tool, session, queue) -> Callable[..., Awaitable[Any] | Any]:
+    """Bind a tool implementation to the session/queue signature."""
+
+    async def _run(**kwargs):
+        result = tool.implementation(session, queue, **kwargs)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return result
+
+    _run.__name__ = tool.name  # For validator parity
+    return _run
+
+
+def create_available_functions(session, queue) -> Dict[str, Callable]:
+    """Return mapping of tool name -> bound implementation."""
+
+    bound = {}
+    for tool in AllTools.get_all():
+        bound[tool.name] = _bind_tool(tool, session, queue)
+    return bound
+
+
+available_functions: Dict[str, Callable] = {}
+
+
+# ---------------------------------------------------------------------------
+# Callback-based registry
+# ---------------------------------------------------------------------------
 
 
 class CallbackBasedFunctionRegistry:
-    """Enhanced function registry with callback-based execution for non-blocking function calls."""
+    """Executes tool functions asynchronously and manages callbacks."""
 
     def __init__(
         self,
         session,
-        functions_dict: Dict[str, Callable] = None,
-        tool_results_queue: asyncio.Queue = None,
-    ):
-        """Initialize the callback-based function registry."""
+        functions_dict: Mapping[str, Callable] | None = None,
+        tool_results_queue: asyncio.Queue | None = None,
+    ) -> None:
         self.session = session
-        self.functions = functions_dict or available_functions
-        self.running_tasks: Dict[str, asyncio.Task] = {}
         self.tool_results_queue = tool_results_queue
+        self.functions: Dict[str, Callable] = (
+            dict(functions_dict)
+            if functions_dict is not None
+            else create_available_functions(session, tool_results_queue)
+        )
+
+        available_functions.clear()
+        available_functions.update(self.functions)
+
+        self.running_tasks: Dict[str, asyncio.Task] = {}
 
     async def execute_function_async(
         self, function_name: str, arguments: Dict[str, Any], call_id: str
     ) -> Dict[str, Any]:
-        """Execute a function asynchronously and return the result."""
+        start_ms = time.time()
+
+        if function_name not in self.functions:
+            raise ValueError(f"Function '{function_name}' not found in registry")
+
+        func = self.functions[function_name]
+
         try:
-            if function_name not in self.functions:
-                raise ValueError(f"Function '{function_name}' not found in registry")
-
-            func = self.functions[function_name]
-
-            exec_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-            print(
-                f"\033[92m[{exec_timestamp}] 🛠️ REGISTRY_EXEC_START: Executing {function_name} with args: {arguments}\033[0m"
-            )
-
-            # Execute the function
-            start_time = time.time()
-            if asyncio.iscoroutinefunction(func):
-                result = await func(**arguments)
-            else:
-                # All our tools now take session and queue as the first arguments
-                result = func(self.session, self.tool_results_queue, **arguments)
-
-            end_time = time.time()
-            duration = (end_time - start_time) * 1000
-
-            result_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-            print(
-                f"\033[92m[{result_timestamp}] 🎉 REGISTRY_EXEC_COMPLETE: {function_name} completed in {duration:.2f}ms\033[0m"
-            )
-
+            result = await func(**arguments)
             return {
                 "result": result,
                 "status": "success",
                 "function_name": function_name,
                 "call_id": call_id,
             }
-
-        except Exception as e:
-            error_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-            print(
-                f"\033[91m[{error_timestamp}] ❌ REGISTRY_EXEC_ERROR: Error executing {function_name}: {e}\033[0m"
+        except Exception as exc:  # noqa: BLE001 - bubble in payload
+            logger.exception(
+                "registry_execute_error", fun=function_name, call_id=call_id
             )
             return {
-                "error": str(e),
+                "error": str(exc),
                 "status": "error",
                 "function_name": function_name,
                 "call_id": call_id,
             }
         finally:
-            # Clean up the running task
-            if call_id in self.running_tasks:
-                del self.running_tasks[call_id]
+            self.running_tasks.pop(call_id, None)
 
     def start_function_execution(
         self, function_name: str, arguments: Dict[str, Any], call_id: str
     ) -> asyncio.Task:
-        """Start function execution in background and return the task."""
-        task_start_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-        print(
-            f"\033[93m[{task_start_timestamp}] 🚀 REGISTRY_TASK_START: Starting background task for {function_name}\033[0m"
-        )
-
         task = asyncio.create_task(
             self.execute_function_async(function_name, arguments, call_id)
         )
         self.running_tasks[call_id] = task
-
         return task
 
     async def _on_function_completed(
         self, task: asyncio.Task, call_id: str, function_name: str
     ) -> None:
-        """Handle completion of a function call with callback pattern."""
         try:
-            # Get the function result
-            result = await task
-
-            completion_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-            print(
-                f"\033[93m[{completion_timestamp}] ✅ REGISTRY_CALLBACK_COMPLETE: Function {function_name} completed via callback\033[0m"
+            payload = await task
+        except Exception:  # noqa: BLE001 - log and bail
+            logger.exception(
+                "registry_callback_error", fun=function_name, call_id=call_id
             )
+            return
 
-            # Extract the actual result message
-            if isinstance(result, dict) and "result" in result:
-                result_message = result["result"]
-            else:
-                result_message = str(result)
+        result = payload.get("result") if isinstance(payload, dict) else payload
 
-            # For the non-blocking agents, the immediate response is the "PENDING" message.
-            # The final response is sent later by the background task.
-            if (
-                isinstance(result_message, dict)
-                and result_message.get("status") == "PENDING"
-            ):
-                # Send the pending response to unblock the model
-                function_response = types.FunctionResponse(
-                    name=function_name, response=result_message, id=call_id
-                )
-                if self.session:
-                    await self.session.send_tool_response(
-                        function_responses=[function_response]
-                    )
-                return
+        if isinstance(result, dict) and result.get("status") == "PENDING":
+            await self._send_pending(function_name, call_id, result)
+            return
 
-            # Send function response back to Gemini and allow model to continue
-            function_response = types.FunctionResponse(
-                name=function_name,
-                response=(
-                    result_message
-                    if isinstance(result_message, dict)
-                    else {"result": result_message}
-                ),
-                id=call_id,
-            )
+        await self._send_final(function_name, call_id, result)
 
-            # Queue the function response instead of sending immediately
-            # This allows the GeminiResponseHandler to send it when Gemini completes its current speech
-            if self.tool_results_queue:
-                await self.tool_results_queue.put(function_response)
+    async def _send_pending(self, function_name: str, call_id: str, body: dict) -> None:
+        if not self.session:
+            return
+        await self.session.send_tool_response(
+            function_responses=[
+                types.FunctionResponse(name=function_name, response=body, id=call_id)
+            ]
+        )
 
-                response_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-                print(
-                    f"\033[93m[{response_timestamp}] 📤 REGISTRY_RESPONSE_QUEUED: Function response queued for {function_name} - will be sent when turn completes\033[0m"
-                )
-            else:
-                # Fallback to immediate sending if no queue available
-                if self.session:
-                    await self.session.send_tool_response(
-                        function_responses=[function_response]
-                    )
+    async def _send_final(self, function_name: str, call_id: str, body: Any) -> None:
+        response = body if isinstance(body, dict) else {"result": body}
+        function_response = types.FunctionResponse(
+            name=function_name, response=response, id=call_id
+        )
 
-                    response_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-                    print(
-                        f"\033[93m[{response_timestamp}] 📤 REGISTRY_RESPONSE_SENT: Function response sent immediately for {function_name} (no queue)\033[0m"
-                    )
+        if self.tool_results_queue is not None:
+            await self.tool_results_queue.put(function_response)
+            return
 
-        except Exception as e:
-            error_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-            print(
-                f"\033[91m[{error_timestamp}] ❌ REGISTRY_CALLBACK_ERROR: Error in callback for {function_name}: {e}\033[0m"
+        if self.session:
+            await self.session.send_tool_response(
+                function_responses=[function_response]
             )
 
     def start_function_with_callback(
-        self, function_name: str, arguments: Dict[str, Any], call_id: str = None
+        self, function_name: str, arguments: Dict[str, Any], call_id: str | None = None
     ) -> str:
-        """Start function execution with callback-based completion."""
-        if call_id is None:
-            call_id = str(uuid.uuid4())
-
-        # Start function execution in background
+        call_id = call_id or str(uuid.uuid4())
         task = self.start_function_execution(function_name, arguments, call_id)
-
-        # Set up task completion callback
-        task.add_done_callback(
+        task.add_done_callback(  # fire-and-forget callback chain
             lambda t, cid=call_id, fname=function_name: asyncio.create_task(
                 self._on_function_completed(t, cid, fname)
             )
         )
-
-        callback_timestamp = time.strftime("%H:%M:%S.%f")[:-3]
-        print(
-            f"\033[96m[{callback_timestamp}] 🔄 REGISTRY_CALLBACK_SET: Callback set for {function_name} (ID: {call_id})\033[0m"
-        )
-
         return call_id
 
     def get_running_tasks(self) -> Dict[str, asyncio.Task]:
-        """Get all currently running function tasks."""
-        return self.running_tasks.copy()
+        return dict(self.running_tasks)
 
     def is_function_available(self, name: str) -> bool:
-        """Check if a function is available in the registry."""
         return name in self.functions
 
 
-# Create default registry instance for backward compatibility
 def create_callback_registry(
     session,
-    functions_dict: Dict[str, Callable] = None,
-    tool_results_queue: asyncio.Queue = None,
+    functions_dict: Mapping[str, Callable] | None = None,
+    tool_results_queue: asyncio.Queue | None = None,
 ):
-    """Factory function to create a callback-based registry."""
     return CallbackBasedFunctionRegistry(session, functions_dict, tool_results_queue)

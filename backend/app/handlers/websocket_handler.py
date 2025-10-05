@@ -6,49 +6,43 @@ import asyncio
 import json
 import traceback
 import uuid
-from typing import Any, Dict
+from datetime import datetime
+from typing import Any, Callable, Dict
 
 import structlog
+from pydantic import BaseModel
 from quart import websocket
 
 from app.core.config import settings
 from app.handlers.client_input_handler import ClientInputHandler
 from app.handlers.gemini_response_handler import GeminiResponseHandler
 from app.services.gemini_client import gemini_manager
-from app.tools import (
-    Booking_Cancellation_Agent,
-    Connect_To_Human_Tool,
-    DateChangeAgent,
-    Enquiry_Tool,
-    Eticket_Sender_Agent,
-    Flight_Booking_Details_Agent,
-    NameCorrectionAgent,
-    ObservabilityAgent,
-    SpecialClaimAgent,
-    Webcheckin_And_Boarding_Pass_Agent,
-    take_a_nap,
-)
+from app.tools import AllTools, create_available_functions
 from app.utils.audio import AudioBuffer
 from utils._logger import bind_request_context, logger
+
+
+class SessionState(BaseModel):
+    user_id: str
+    session_id: str
+    connection_start_time: datetime
+    processed_tool_calls: dict[str, str]
+    pending_tool_calls: dict[str, str]
+    total_tool_calls: int
 
 
 class WebSocketHandler:
     """Handles WebSocket connections and Gemini Live API integration."""
 
     def __init__(self):
-        self.available_functions = {
-            "take_a_nap": take_a_nap,
-            "NameCorrectionAgent": NameCorrectionAgent,
-            "SpecialClaimAgent": SpecialClaimAgent,
-            "Enquiry_Tool": Enquiry_Tool,
-            "Eticket_Sender_Agent": Eticket_Sender_Agent,
-            "ObservabilityAgent": ObservabilityAgent,
-            "DateChangeAgent": DateChangeAgent,
-            "Connect_To_Human_Tool": Connect_To_Human_Tool,
-            "Booking_Cancellation_Agent": Booking_Cancellation_Agent,
-            "Flight_Booking_Details_Agent": Flight_Booking_Details_Agent,
-            "Webcheckin_And_Boarding_Pass_Agent": Webcheckin_And_Boarding_Pass_Agent,
-        }
+        self.available_functions: Dict[str, Callable] = {}
+        self.discovered_tool_names = AllTools.list_valid_tool_names()
+
+        logger.info(
+            "Initialized WebSocketHandler tool catalog",
+            tool_count=len(self.discovered_tool_names),
+            tools=self.discovered_tool_names,
+        )
 
     async def handle_connection(self):
         """Main WebSocket connection handler."""
@@ -76,6 +70,18 @@ class WebSocketHandler:
                     json.dumps({"type": "control", "signal": "server_ready"})
                 )
                 logger.info("Sent 'server_ready' signal to client")
+
+                if not self.available_functions:
+                    if not self.discovered_tool_names:
+                        self.discovered_tool_names = AllTools.list_valid_tool_names()
+                    self.available_functions = create_available_functions(
+                        session, tool_results_queue
+                    )
+                    logger.info(
+                        "Bound tool implementations for session",
+                        tool_count=len(self.available_functions),
+                        tools=list(self.available_functions.keys()),
+                    )
 
                 # Create handlers, passing the queue to the response handler
                 client_handler = ClientInputHandler(session, session_state)

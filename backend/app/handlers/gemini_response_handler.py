@@ -261,7 +261,7 @@ class GeminiResponseHandler:
             return
 
         response_count = 0
-        while not self.tool_results_queue.empty():
+        while self.tool_results_queue.qsize():
             function_response = await self.tool_results_queue.get()
 
             try:
@@ -276,7 +276,6 @@ class GeminiResponseHandler:
                         print(
                             f"\033[93m[WARN] Skipping already processed tool call: {tool_call_id}\033[0m"
                         )
-                        self.tool_results_queue.task_done()
                         continue
 
                     # It's a FunctionResponse object - send as tool response

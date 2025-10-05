@@ -7,13 +7,26 @@ clean separation of concerns and maintainability.
 
 import signal
 import sys
+import uuid
+
+import structlog
 
 from app.core.app import create_app
+from utils._logger import bind_request_context
 
 app = create_app()
 
 
-# Note: WebSocket connections handle request_id binding directly in WebSocketHandler
+@app.before_request
+def add_request_id():
+    request_id = str(uuid.uuid4())
+    bind_request_context(request_id=request_id)
+
+
+@app.after_request
+def clear_request_context(response):
+    structlog.contextvars.clear_contextvars()
+    return response
 
 
 def signal_handler(signum, frame):
@@ -30,17 +43,18 @@ if __name__ == "__main__":
 
     config = hypercorn.config.Config()
     config.bind = ["0.0.0.0:8000"]
+    config.reload = True
 
     print("🚀 Starting Gemini Live Travel Assistant Backend...")
     print("🌐 Server will be available at http://0.0.0.0:8000")
     print("📡 WebSocket endpoint: ws://0.0.0.0:8000/listen")
 
     try:
-        import asyncio
-
-        asyncio.run(hypercorn.asyncio.serve(app, config))
+        hypercorn.asyncio.serve(app, config)
     except KeyboardInterrupt:
         print("\n👋 Shutting down gracefully...")
+        cleanup_on_exit()
     except Exception as e:
         print(f"❌ Failed to start server: {e}")
+        cleanup_on_exit()
         sys.exit(1)

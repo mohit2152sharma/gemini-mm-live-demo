@@ -3,3 +3,4 @@ quart-cors
 google-genai
 python-dotenv
 hypercorn
+pydantic>=2.6.0
