@@ -9,7 +9,7 @@ from quart_cors import cors
 from app.core.config import settings
 from app.routes.api import api_bp
 from app.routes.websocket import websocket_bp
-from utils._logger import logger
+from app.utils.logging import logger
 
 
 def create_app() -> Quart:
@@ -37,4 +37,3 @@ def create_app() -> Quart:
     app.register_blueprint(websocket_bp)
 
     return app
-

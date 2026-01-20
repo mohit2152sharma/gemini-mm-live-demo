@@ -9,17 +9,14 @@ import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict
 
-import structlog
 from pydantic import BaseModel
 from quart import websocket
 
 from app.core.config import settings
-from app.handlers.client_input_handler import ClientInputHandler
-from app.handlers.gemini_response_handler import GeminiResponseHandler
 from app.services.gemini_client import gemini_manager
 from app.tools import AllTools, create_available_functions
 from app.utils.audio import AudioBuffer
-from utils._logger import bind_request_context, logger
+from app.utils.logging import logger, request_context
 
 
 class SessionState(BaseModel):
@@ -34,14 +31,16 @@ class SessionState(BaseModel):
 class WebSocketHandler:
     """Handles WebSocket connections and Gemini Live API integration."""
 
-    def __init__(self):
+    def __init__(self, use_state_machines: bool = True):
         self.available_functions: Dict[str, Callable] = {}
         self.discovered_tool_names = AllTools.list_valid_tool_names()
+        self.use_state_machines = use_state_machines
 
         logger.info(
             "Initialized WebSocketHandler tool catalog",
             tool_count=len(self.discovered_tool_names),
             tools=self.discovered_tool_names,
+            use_state_machines=use_state_machines,
         )
 
     async def handle_connection(self):
@@ -49,15 +48,14 @@ class WebSocketHandler:
         connection_start_time = asyncio.get_event_loop().time()
 
         # Generate unique request ID for this WebSocket connection
-        request_id = str(uuid.uuid4())
-        bind_request_context(request_id=request_id, connection_type="websocket")
-        # logger.bind(request_id=request_id, connection_type="websocket")
+        connection_id = str(uuid.uuid4())
+        request_context.bind_websocket_context(websocket_id=connection_id)
 
-        logger.info("New WebSocket connection accepted", connection_id=request_id)
+        logger.info("New WebSocket connection accepted", connection_id=connection_id)
 
         # Initialize connection state and a queue for graceful tool result delivery
         session_state = self._initialize_session_state(
-            connection_start_time, request_id
+            connection_start_time, connection_id
         )
         tool_results_queue = asyncio.Queue()
 
@@ -83,11 +81,117 @@ class WebSocketHandler:
                         tools=list(self.available_functions.keys()),
                     )
 
-                # Create handlers, passing the queue to the response handler
-                client_handler = ClientInputHandler(session, session_state)
-                gemini_handler = GeminiResponseHandler(
-                    session, session_state, self.available_functions, tool_results_queue
-                )
+                # Create handlers based on configuration
+                if self.use_state_machines:
+                    logger.info("Using NEW state machine-based handlers")
+
+                    # Import new state machine components
+                    from app.handlers.sm_client_handler import StateMachineClientHandler
+                    from app.handlers.sm_response_handler import (
+                        StateMachineResponseHandler,
+                    )
+                    from app.handlers.state_machine_handler import (
+                        StateMachineCoordinator,
+                    )
+                    from app.state.conversation_state import ConversationStateMachine
+                    from app.state.tool_executor import ToolExecutor
+                    from app.state.tool_state import ToolStateMachine
+
+                    # Create state machines
+                    conversation_state = ConversationStateMachine()
+                    tool_state = ToolStateMachine()
+
+                    # Create tool executor
+                    tool_executor = ToolExecutor(
+                        session,
+                        tool_state,
+                        self.available_functions,
+                        tool_results_queue,
+                    )
+
+                    # Create coordinator
+                    coordinator = StateMachineCoordinator(
+                        session,
+                        conversation_state,
+                        tool_state,
+                        tool_executor,
+                    )
+
+                    # Create handlers
+                    client_handler = StateMachineClientHandler(
+                        session,
+                        session_state,
+                        coordinator,
+                    )
+
+                    gemini_handler = StateMachineResponseHandler(
+                        session,
+                        session_state,
+                        coordinator,
+                    )
+
+                    logger.info(
+                        "State machines initialized",
+                        conversation_state="IDLE",
+                        tool_state="IDLE",
+                    )
+
+                else:
+                    logger.warning(
+                        "Legacy handlers not available - using state machines",
+                        reason="legacy_handlers_removed",
+                    )
+
+                    # Import state machine components (fallback to state machines)
+                    from app.handlers.sm_client_handler import StateMachineClientHandler
+                    from app.handlers.sm_response_handler import (
+                        StateMachineResponseHandler,
+                    )
+                    from app.handlers.state_machine_handler import (
+                        StateMachineCoordinator,
+                    )
+                    from app.state.conversation_state import ConversationStateMachine
+                    from app.state.tool_executor import ToolExecutor
+                    from app.state.tool_state import ToolStateMachine
+
+                    # Create state machines
+                    conversation_state = ConversationStateMachine()
+                    tool_state = ToolStateMachine()
+
+                    # Create tool executor
+                    tool_executor = ToolExecutor(
+                        session,
+                        tool_state,
+                        self.available_functions,
+                        tool_results_queue,
+                    )
+
+                    # Create coordinator
+                    coordinator = StateMachineCoordinator(
+                        session,
+                        conversation_state,
+                        tool_state,
+                        tool_executor,
+                    )
+
+                    # Create handlers
+                    client_handler = StateMachineClientHandler(
+                        session,
+                        session_state,
+                        coordinator,
+                    )
+
+                    gemini_handler = StateMachineResponseHandler(
+                        session,
+                        session_state,
+                        coordinator,
+                    )
+
+                    logger.info(
+                        "Fallback: Using state machine handlers",
+                        conversation_state="IDLE",
+                        tool_state="IDLE",
+                    )
 
                 # Create and run tasks
                 forward_task = asyncio.create_task(
@@ -125,15 +229,15 @@ class WebSocketHandler:
         finally:
             logger.info("WebSocket endpoint processing finished")
             # Clear context when connection ends
-            structlog.contextvars.clear_contextvars()
+            request_context.clear_context()
 
     def _initialize_session_state(
-        self, connection_start_time: float, request_id: str
+        self, connection_start_time: float, connection_id: str
     ) -> Dict[str, Any]:
         """Initialize session state for the connection."""
         return {
             "connection_start_time": connection_start_time,
-            "request_id": request_id,
+            "connection_id": connection_id,
             "current_session_handle": None,
             "client_ready_for_audio": False,
             "mic_audio_buffer": AudioBuffer(),

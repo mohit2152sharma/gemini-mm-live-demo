@@ -17,11 +17,6 @@ from app.tools.tools.base_tool import BaseTool
 from utils.app_settings import TOOL_CHECKING
 
 
-class ToolMap(BaseModel):
-    tool_name: str
-    tool: BaseTool
-
-
 class AllTools:  # pylint: disable=too-many-public-methods
     """
     Utility class for discovering and accessing all available tools.

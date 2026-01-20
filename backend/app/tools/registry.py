@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 travel_tool = types.Tool(
-    function_declarations=[tool.declaration for tool in AllTools.get_all()]
+    function_declarations=[tool.declaration for tool in AllTools.get_valid_tools()]
 )
 
 
@@ -46,7 +46,7 @@ def create_available_functions(session, queue) -> Dict[str, Callable]:
     """Return mapping of tool name -> bound implementation."""
 
     bound = {}
-    for tool in AllTools.get_all():
+    for tool in AllTools.get_valid_tools():
         bound[tool.name] = _bind_tool(tool, session, queue)
     return bound
 

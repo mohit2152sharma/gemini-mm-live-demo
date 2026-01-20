@@ -6,11 +6,11 @@ from typing import Optional
 
 import google.genai as genai
 from google.genai import types
-from utils._logger import logger
 
 from app.core.config import settings
 from app.services.system_prompt import BaseSystemPrompt, HelpfulAssistantPrompt
 from app.tools import AllTools
+from app.utils.logging import logger
 
 
 class GeminiClientManager:
@@ -73,7 +73,7 @@ class GeminiClientManager:
 
     def _create_live_config(self) -> types.LiveConnectConfig:
         """Create the live connection configuration."""
-        tool_declarations = [tool.declaration for tool in AllTools.get_all()]
+        tool_declarations = [tool.declaration for tool in AllTools.get_valid_tools()]
 
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],

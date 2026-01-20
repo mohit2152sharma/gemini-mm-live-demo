@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "google-genai>=1.47.0",
     "quart>=0.20.0",
     "structlog>=25.4.0",
 ]

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Use structlog for consistent logging
-from utils._logger import logger
+from app.utils.logging import logger
 
 # Global store for logs (maintaining compatibility with original structure)
 GLOBAL_LOG_STORE = []

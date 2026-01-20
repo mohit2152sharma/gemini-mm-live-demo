@@ -4,3 +4,4 @@ google-genai
 python-dotenv
 hypercorn
 pydantic>=2.6.0
+structlog>=24.1.0

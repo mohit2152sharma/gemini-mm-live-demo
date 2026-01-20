@@ -3,11 +3,8 @@
 import asyncio
 
 from google.genai.live import AsyncSession
-from pydantic import BaseModel
 
-from app.tools.all_tools import AllTools
 from app.tools.tools.base_tool import BaseTool
-from utils._logger import logger
 
 
 class ToolState:
